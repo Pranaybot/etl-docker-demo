@@ -1,10 +1,16 @@
-FROM python:3.12-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
 RUN pip install --no-cache-dir psycopg2-binary
 
-COPY python_etl.py .
+COPY etl.py .
 
-CMD ["python", "python_etl.py"]
+ENV DB_HOST=""
+ENV DB_PORT="5432"
+ENV DB_NAME=""
+ENV DB_USER=""
+ENV DB_PASSWORD=""
+
+CMD ["python", "etl.py"]
 

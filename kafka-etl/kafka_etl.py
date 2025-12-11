@@ -4,80 +4,91 @@ import json
 import psycopg2
 from kafka import KafkaProducer, KafkaConsumer
 
-def get_env(name, default):
-    return os.environ.get(name, default)
+def wait_for_postgres():
+    host = os.getenv("DB_HOST", "postgres")
+    port = int(os.getenv("DB_PORT", "5432"))
+    dbname = os.getenv("DB_NAME", "etl_db")
+    user = os.getenv("DB_USER", "etl_user")
+    password = os.getenv("DB_PASSWORD", "etl_password")
+
+    for i in range(10):
+    	try:
+	    conn = psycopg2.connect(
+	        host=host, port=port,
+		dbname=dbname, user=user, password=password
+	    )
+	    print("Kafka ETL: Connected to Postgres.")
+	    return conn
+	except Exception as e:
+	    print(f"Kafka ETL: waiting for postgres... ({9 - i} retries left)")
+	    time.sleep(3)
+    raise RunTimeError("Kafka ETL: could not connect to Postgres.")
+
+def wait_for_kafka(bootstrap_servers):
+    for i in range(10):
+	try:
+	    producer = KafkaProducer(
+	        bootstrap_servers=bootstrap_servers,
+		value_serializer=lambda v: json.dumps(v).encode("utf-8")
+	    )
+	    print("Kafka ETL: connected to Kafka.")
+	    return producer
+	except Exception as e:
+	    print(f"Kafka ETL: waiting for Kafka... ({9 - i} retries left)")
+	    time.sleep(3)
+    raise runTimeError("Kafka ETL: could not connect to Kafka.")
 
 def main():
-    pg_host = get_env("POSTGRES_HOST", "postgres")
-    pg_db   = get_env("POSTGRES_DB", "etl_db")
-    pg_user = get_env("POSTGRES_USER", "etl_user")
-    pg_pwd  = get_env("POSTGRES_PASSWORD", "etl_password")
+    print("Kafka ETL starting...")
 
-    kafka_bootstrap = get_env("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
-    topic = get_env("KAFKA_TOPIC", "etl-topic")
+    bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+    topic = os.getenv("KAFKA_TOPIC", "etl-topic")
 
-    print("Kafka ETL: Waiting for Kafka & Postgres...")
-    time.sleep(25)
-
-    # Connect to Postgres
-    conn = psycopg2.connect(
-        host=pg_host,
-        port=5432,
-        dbname=pg_db,
-        user=pg_user,
-        password=pg_pwd,
-    )
+    conn = wait_for_postgres()
     cur = conn.cursor()
-
-    # Ensure table exists (same as Java/Python ETL)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS etl_records (
-            id SERIAL PRIMARY KEY,
-            source VARCHAR(50),
-            payload TEXT
-        )
-    """)
+    cur.execute(
+        """
+	CREATE TABLE IF NOT EXISTS kafka_etl_data (
+	    id SERIAL PRIMARY KEY,
+	    source TEXT NOT NULL,
+	    payload JSONB NOT NULL
+	)
+	"""
+    )
     conn.commit()
 
-    # Kafka Producer
-    producer = KafkaProducer(
-        bootstrap_servers=kafka_bootstrap.split(","),
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-    )
-
-    # Publish a message
-    message = {"message": "Hello from Kafka ETL", "origin": "kafka-etl"}
-    print(f"Kafka ETL: Sending message to topic '{topic}': {message}")
+    producer = wait_for_kafka(bootstrap_servers)
+    
+    message = {"id": 1, "text": "Hello from Kafka ETL"}
+    print(f"Kafka ETL: producing message: {message}")
     producer.send(topic, message)
     producer.flush()
 
-    # Kafka Consumer (consume the record we just sent)
     consumer = KafkaConsumer(
         topic,
-        bootstrap_servers=kafka_bootstrap.split(","),
+    	bootstrap_servers=bootstrap_servers,
         auto_offset_reset="earliest",
-        enable_auto_commit=True,
-        group_id="etl-group",
-        value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+	enable_auto_commit=True,
+	value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+	group_id="etl-group"
     )
 
-    print("Kafka ETL: Waiting for message from topic...")
-    msg = next(consumer)  # get first message
-    payload = msg.value
-    print(f"Kafka ETL: Consumed message: {payload}")
+    print("Kafka ETL: waiting to consume a message...")
+    for msg in consumer:
+        payload = msg.value
+  	print(f"Kafka ETL: consumed message: {payload}")
 
-    # Insert consumed message into Postgres
-    cur.execute(
-        "INSERT INTO etl_records (source, payload) VALUES (%s, %s)",
-        ("kafka-etl", json.dumps(payload)),
-    )
-    conn.commit()
-    print("Kafka ETL: Inserted consumed message into etl_records.")
+	cur.execute(
+	    INSERT INTO kafka_etl_data (source, payload) VALUES (%s, %s),
+	    ("kafka", json.dumps(payload))
+	)
+	conn.commit()
+	print("Kafka ETL: inserted consumed message into kafka_etl_data.")
+	break
 
-    consumer.close()
     cur.close()
     conn.close()
-    print("Kafka ETL: Done.")
+    print("Kafka ETL finished.")
 
 if __name__ == "__main__":
     main()
