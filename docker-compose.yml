@@ -6,42 +6,61 @@ services:
     container_name: postgres-db
     environment:
       POSTGRES_USER: etl_user
-      POSTGRES_PASSWORD: etl_password  
+      POSTGRES_PASSWORD: etl_password
       POSTGRES_DB: etl_db
     ports:
-      - "5432:5432"    
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - etl_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl_user -d etl_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   kafka:
     image: bitnami/kafka:3.7
-    container_name: kafka-broker
-    environment:
-      - KAFKA_CFG_NODE_ID=0
-      - KAFKA_CFG_PROCESS_ROLES=broker,controller
-      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=controller
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
-      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9092
-      - KAFKA_CFG_LOG_DIRS=/bitnami/kafka/data
-      - ALLOW_PLAINTEXT_LISTENER=yes
-    ports:
-      "9092:9092"
-    depends_on:
-      - postgres
+      container_name: kafka-broker
+      environment:
+        - KAFKA_CFG_NODE_ID=0
+        - KAFKA_CFG_PROCESS_ROLES=broker,controller
+        - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+        - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+        - 
+KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+        - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+        - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+        - ALLOW_PLAINTEXT_LISTENER=yes
+      ports:
+        - "9092:9092"
+      depends_on:
+        postgres:
+          condition: service_healthy
+      networks:
+        - etl_network
+
 
   java_etl:
-    build: ./java-etl
+    build:
+      context: ./java-etl
+      dockerfile: Dockerfile
     container_name: java-etl
     environment:
       JDBC_URL: jdbc:postgresql://postgres:5432/etl_db
       DB_USER: etl_user
       DB_PASSWORD: etl_password
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    networks:
+      - etl_network
 
   python_etl:
-    build: ./python-etl
+    build:
+      context: ./python-etl
+      dockerfile: Dockerfile
     container_name: python-etl
     environment:
       DB_HOST: postgres
@@ -50,10 +69,14 @@ services:
       DB_USER: etl_user
       DB_PASSWORD: etl_password
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    networks:
+      - etl_network
 
   kafka-etl:
-    build: ./kafka-etl
+    build:
+      context: ./kafka-etl
     container_name: kafka-etl
     environment:
       DB_HOST: postgres
@@ -62,10 +85,19 @@ services:
       DB_USER: etl_user
       DB_PASSWORD: etl_password
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_TOPIC: etl-KAFKA_TOPIC
+      KAFKA_TOPIC: etl_topic
     depends_on:
-      - postgres
-      - kafka
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks:
+      - etl_network
 
 volumes:
   pgdata:
+
+networks:
+  etl_network:
+    driver: bridge
+

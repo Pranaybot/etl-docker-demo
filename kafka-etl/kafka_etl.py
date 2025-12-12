@@ -2,6 +2,7 @@ import os
 import time
 import json
 import psycopg2
+from psycopg2.extras import Json
 from kafka import KafkaProducer, KafkaConsumer
 
 def wait_for_postgres():
@@ -24,13 +25,14 @@ def wait_for_postgres():
 	    time.sleep(3)
     raise RunTimeError("Kafka ETL: could not connect to Postgres.")
 
-def wait_for_kafka(bootstrap_servers):
+def wait_for_kafka(bootstrap_servers: str):
     for i in range(10):
 	try:
 	    producer = KafkaProducer(
 	        bootstrap_servers=bootstrap_servers,
 		value_serializer=lambda v: json.dumps(v).encode("utf-8")
 	    )
+	    producer.bootstrap_connected()
 	    print("Kafka ETL: connected to Kafka.")
 	    return producer
 	except Exception as e:
@@ -45,17 +47,17 @@ def main():
     topic = os.getenv("KAFKA_TOPIC", "etl-topic")
 
     conn = wait_for_postgres()
-    cur = conn.cursor()
-    cur.execute(
-        """
-	CREATE TABLE IF NOT EXISTS kafka_etl_data (
-	    id SERIAL PRIMARY KEY,
-	    source TEXT NOT NULL,
-	    payload JSONB NOT NULL
-	)
-	"""
-    )
-    conn.commit()
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+		CREATE TABLE IF NOT EXISTS kafka_etl_data (
+	            id SERIAL PRIMARY KEY,
+	   	    source TEXT NOT NULL,
+	   	    payload JSONB NOT NULL
+		)
+		"""
+    	     ))
 
     producer = wait_for_kafka(bootstrap_servers)
     
@@ -78,15 +80,17 @@ def main():
         payload = msg.value
   	print(f"Kafka ETL: consumed message: {payload}")
 
-	cur.execute(
-	    INSERT INTO kafka_etl_data (source, payload) VALUES (%s, %s),
-	    ("kafka", json.dumps(payload))
-	)
-	conn.commit()
+	with conn:
+	    with conn.cursor() as cur:
+	        cur.execute(
+		    "INSERT INTO kafka_etl_data (source, payload) VALUES 
+(%s, %s)", ("kafka", Json( payload)),
+	        )
+
 	print("Kafka ETL: inserted consumed message into kafka_etl_data.")
 	break
 
-    cur.close()
+    consumer.close()
     conn.close()
     print("Kafka ETL finished.")
 
